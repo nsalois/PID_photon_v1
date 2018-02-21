@@ -17,8 +17,8 @@
 #define PUBLISH_INTERVAL 30000
 
 
-unsigned long myChannelNumber   = 228423;
-const char * myWriteAPIKey      = "A4I3XH61191GVIQH";
+unsigned long myChannelNumber   = xxxxxxx;
+const char * myWriteAPIKey      = "xxxxxxxxxxx";
 
 typedef uint8_t DeviceAddress[8];
 DeviceAddress SENSOR1           = {0x28, 0xFF, 0x27, 0x16, 0xA1, 0x16, 0x03, 0x29};
