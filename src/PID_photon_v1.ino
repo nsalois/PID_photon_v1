@@ -33,7 +33,7 @@ unsigned long readMillis        = 0;
 unsigned long publishMillis     = 0;
 unsigned long windowStartTime;
 String controlMode;
-String PIDaction;
+String PIDaction = "P_ON_E";
 
 
 TCPClient client;
@@ -214,7 +214,6 @@ void setup() {
    Particle.variable("E-STOP",         eStop);
    Particle.variable("CRCERR",         crcErrorCount);
 
-
    // ParticleCloud: functions
    Particle.function("setpoint",       set_Setpoint);
    Particle.function("action",         set_Action);
@@ -230,11 +229,7 @@ void setup() {
 
    //tell the PID to range between 0 and the full window size
    myPID.SetOutputLimits(0, windowSize);
-
-   //turn the PID on
    myPID.SetMode(PID::AUTOMATIC);
-   myPID.SetAction(PID::P_ON_E);
-   PIDaction = "P_ON_E";
 
    windowStartTime = millis();;
 
