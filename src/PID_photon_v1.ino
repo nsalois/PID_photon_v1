@@ -4,41 +4,78 @@
 #include "PID_v1.h"
 #include "OneWire.h"
 #include "DS18.h"
+#include "PID-AutoTune.h"
 
 
 #define DEBUG_TRUE FALSE
 
-// Input pin where DS18B20 is connected
-#define DS18PIN          D3
-#define RELAYPIN         D6
-#define LEDPIN           D7
+
+// ************************************************
+// Pin definitions
+// ************************************************
+#define DS18PIN    D3
+#define RELAYPIN   D6
+#define LEDPIN     D7
+
+
+// ************************************************
+// ThingSpeak Variables and constants
+// ************************************************
+#define READ_INTERVAL           1000
+#define PUBLISH_INTERVAL        30000
+unsigned long myChannelNumber   = xxx;
+const char * myWriteAPIKey      = "xxx";
+TCPClient client;
+
+
+// ************************************************
+// Probe ERROR detetion Variables and constants
+// ************************************************
 #define MAX_READERROR    30
-#define READ_INTERVAL    1000
-#define PUBLISH_INTERVAL 30000
+int eStop                = 0;
+int crcErrorCount        = 0;
 
 
-unsigned long myChannelNumber   = xxxxxxx;
-const char * myWriteAPIKey      = "xxxxxxxxxxx";
-
+// ************************************************
+// Probe Addressing, Variables, and constants
+// ************************************************
+DS18 sensor(DS18PIN);
 typedef uint8_t DeviceAddress[8];
 DeviceAddress SENSOR1           = {0x28, 0xFF, 0x27, 0x16, 0xA1, 0x16, 0x03, 0x29};
 DeviceAddress SENSOR2           = {0x28, 0xFF, 0xA1, 0x02, 0xA1, 0x16, 0x03, 0x48};
-//Define Variables we'll be connecting to
+
+
+// ************************************************
+// PID Variables and constants
+// ************************************************
 double Setpoint, Input, Input2, Output, Kp, Ki, Kd;
-int windowSize                  = 3000;
-int crcErrorCount               = 0;
-bool inputselect1               = TRUE;
-int eStop                       = 0;
-unsigned long readMillis        = 0;
-unsigned long publishMillis     = 0;
+int windowSize              = 3000;
+bool inputselect1           = TRUE;
+unsigned long readMillis    = 0;
+unsigned long publishMillis = 0;
 unsigned long windowStartTime;
 String controlMode;
 String PIDaction = "P_ON_E";
 
+// EEPROM addresses for persisted data
+const int SpAddress = 0;
+const int KpAddress = 8;
+const int KiAddress = 16;
+const int KdAddress = 24;
 
-TCPClient client;
-DS18 sensor(DS18PIN);
-PID myPID(&Input, &Output, &Setpoint,80,5,2, PID::P_ON_E, PID::DIRECT);
+PID myPID(&Input, &Output, &Setpoint, Kp, Ki, Kd, PID::P_ON_E, PID::DIRECT);
+
+
+// ************************************************
+// Auto Tune Variables and constants
+// ************************************************
+byte ATuneModeRemember=2;
+double aTuneStep=500;
+double aTuneNoise=1;
+unsigned int aTuneLookBack=20;
+boolean tuning = false;
+PID_ATune aTune(&Input, &Output);
+
 
 
 void publishThingspeak(double a, double b, unsigned long t) {
@@ -63,6 +100,13 @@ void publishThingspeak(double a, double b, unsigned long t) {
 }
 
 
+int startAT(String command){
+  if (isValidNumber(command)){
+      int a = command.toInt();
+      if (a == 1) { StartAutoTune(); } return 1; }
+  else { return 0; }
+}
+
 
 int set_Setpoint(String command) {
     if (isValidNumber(command)){
@@ -74,7 +118,6 @@ int set_Setpoint(String command) {
     }
 
 }
-
 
 
 int set_Tunings(String command) {
@@ -97,6 +140,7 @@ int set_Tunings(String command) {
         Kp = myPID.GetKp();
         Ki = myPID.GetKi();
         Kd = myPID.GetKd();
+        SaveParameters();
 
         return 1;
     }
@@ -104,7 +148,6 @@ int set_Tunings(String command) {
         return 0;
     }
 }
-
 
 
 int set_WindowSize(String command) {
@@ -140,12 +183,10 @@ int set_Action(String command) {
 }
 
 
-
 int reBoot(String command) {
     if  (command.equals("reboot")) System.reset();
     else return 0;
 }
-
 
 
 int setControlSensor(String command) {
@@ -169,7 +210,6 @@ int setControlSensor(String command) {
 }
 
 
-
 bool isValidPID(String str){
    boolean isNum=false;
    for(byte i=0;i<str.length();i++)
@@ -179,7 +219,6 @@ bool isValidPID(String str){
    }
    return isNum;
 }
-
 
 
 bool isValidNumber(String str){
@@ -192,6 +231,124 @@ bool isValidNumber(String str){
    return isNum;
 }
 
+// ************************************************
+// Start the Auto-Tuning cycle
+// ************************************************
+void StartAutoTune()
+{
+   // REmember the mode we were in
+   AutoTuneHelper(true);
+
+   // set up the auto-tune parameters
+   aTune.SetNoiseBand(aTuneNoise);
+   aTune.SetOutputStep(aTuneStep);
+   aTune.SetLookbackSec((int)aTuneLookBack);
+   tuning = true;
+}
+
+// ************************************************
+// Return to normal control
+// ************************************************
+void FinishAutoTune() {
+   tuning = false;
+
+   // Extract the auto-tune calculated parameters
+   Kp = aTune.GetKp();
+   Ki = aTune.GetKi();
+   Kd = aTune.GetKd();
+
+   // Re-tune the PID and revert to normal control mode
+   myPID.SetTunings(Kp,Ki,Kd);
+   AutoTuneHelper(false);
+
+   // Persist any changed parameters to EEPROM
+   SaveParameters();
+}
+
+
+void AutoTuneHelper(boolean start) {
+  if(start)
+    ATuneModeRemember = myPID.GetMode();
+  else
+    myPID.SetMode((PID::mode_t)ATuneModeRemember);
+
+}
+
+// ************************************************
+// Save any parameter changes to EEPROM
+// ************************************************
+void SaveParameters() {
+   if (Setpoint != EEPROM_readDouble(SpAddress))
+   {
+      EEPROM_writeDouble(SpAddress, Setpoint);
+   }
+   if (Kp != EEPROM_readDouble(KpAddress))
+   {
+      EEPROM_writeDouble(KpAddress, Kp);
+   }
+   if (Ki != EEPROM_readDouble(KiAddress))
+   {
+      EEPROM_writeDouble(KiAddress, Ki);
+   }
+   if (Kd != EEPROM_readDouble(KdAddress))
+   {
+      EEPROM_writeDouble(KdAddress, Kd);
+   }
+}
+
+// ************************************************
+// Load parameters from EEPROM
+// ************************************************
+void LoadParameters() {
+  // Load from EEPROM
+   Setpoint = EEPROM_readDouble(SpAddress);
+   Kp = EEPROM_readDouble(KpAddress);
+   Ki = EEPROM_readDouble(KiAddress);
+   Kd = EEPROM_readDouble(KdAddress);
+
+   // Use defaults if EEPROM values are invalid
+   if (isnan(Setpoint))
+   {
+     Setpoint = 60;
+   }
+   if (isnan(Kp))
+   {
+     Kp = 850;
+   }
+   if (isnan(Ki))
+   {
+     Ki = 0.5;
+   }
+   if (isnan(Kd))
+   {
+     Kd = 0.1;
+   }
+}
+
+
+// ************************************************
+// Write floating point values to EEPROM
+// ************************************************
+void EEPROM_writeDouble(int address, double value) {
+   byte* p = (byte*)(void*)&value;
+   for (int i = 0; i < sizeof(value); i++)
+   {
+      EEPROM.write(address++, *p++);
+   }
+}
+
+// ************************************************
+// Read floating point values from EEPROM
+// ************************************************
+double EEPROM_readDouble(int address) {
+   double value = 0.0;
+   byte* p = (byte*)(void*)&value;
+   for (int i = 0; i < sizeof(value); i++)
+   {
+      *p++ = EEPROM.read(address++);
+   }
+   return value;
+}
 
 // Setup
 void setup() {
@@ -221,12 +378,14 @@ void setup() {
    Particle.function("win_size",       set_WindowSize);
    Particle.function("reboot",         reBoot);
    Particle.function("control",        setControlSensor);
+   Particle.function("AutoTune",       startAT);
+
 
    ThingSpeak.begin(client);
 
-    //initialize the variables we're linked to
-   Setpoint  = 60;
-
+   // Initialize the PID and related variables
+   LoadParameters();
+   myPID.SetTunings(Kp,Ki,Kd);
    //tell the PID to range between 0 and the full window size
    myPID.SetOutputLimits(0, windowSize);
    myPID.SetMode(PID::AUTOMATIC);
@@ -293,8 +452,16 @@ void loop() {
        digitalWrite(LEDPIN,LOW);
    }
    else{
+     if (tuning){ // run the auto-tuner
+       if (aTune.Runtime()) // returns 'true' when done
+       {
+         FinishAutoTune();
+       }
+     }
+     else{ // Execute control algorithm
 
        myPID.Compute();
+     }
 
        /************************************************
        * turn the output pin on/off based on pid output
