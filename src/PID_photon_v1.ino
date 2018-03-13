@@ -54,8 +54,13 @@ bool inputselect1           = TRUE;
 unsigned long readMillis    = 0;
 unsigned long publishMillis = 0;
 unsigned long windowStartTime;
+
+
+
 String controlMode;
 String PIDaction = "P_ON_E";
+String PIDmode   = "MANUAL";
+String isTuning  = "FALSE";
 
 // EEPROM addresses for persisted data
 const int SpAddress = 0;
@@ -103,14 +108,33 @@ void publishThingspeak(double a, double b, unsigned long t) {
 int startAT(String command){
   if (isValidNumber(command)){
       int a = command.toInt();
-      if (a == 1) { StartAutoTune(); } return 1; }
-  else { return 0; }
+      if (a == 1) {
+        StartAutoTune();
+        isTuning = "TRUE";
+      } return 1;
+    }
+  else {
+    return 0;
+  }
 }
 
 
 int set_Setpoint(String command) {
     if (isValidNumber(command)){
         Setpoint = (double) command.toInt();
+        SaveParameters();
+        return 1;
+    }
+    else{
+        return 0;
+    }
+
+}
+
+
+int set_Output(String command) {
+    if (isValidNumber(command)){
+        Output = (double) command.toInt();
         return 1;
     }
     else{
@@ -183,6 +207,26 @@ int set_Action(String command) {
 }
 
 
+int set_Mode(String command) {
+    if (isValidNumber(command)){
+        bool a = command.toInt();
+
+        if (a == 1) {
+            myPID.SetMode(PID::AUTOMATIC);
+            PIDmode = "AUTOMATIC";
+        }
+        if (a == 0) {
+            myPID.SetMode(PID::MANUAL);
+            PIDmode = "MANUAL";
+        }
+
+        return 1;
+    }
+    else {
+        return 0;
+    }
+}
+
 int reBoot(String command) {
     if  (command.equals("reboot")) System.reset();
     else return 0;
@@ -251,7 +295,7 @@ void StartAutoTune()
 // ************************************************
 void FinishAutoTune() {
    tuning = false;
-
+   isTuning = "FALSE";
    // Extract the auto-tune calculated parameters
    Kp = aTune.GetKp();
    Ki = aTune.GetKi();
@@ -368,18 +412,21 @@ void setup() {
    Particle.variable("windowsize",     windowSize);
    Particle.variable("control",        controlMode);
    Particle.variable("action",         PIDaction);
-   Particle.variable("E-STOP",         eStop);
-   Particle.variable("CRCERR",         crcErrorCount);
+   Particle.variable("mode",           PIDmode);
+   Particle.variable("estop",          eStop);
+   Particle.variable("crcerr",         crcErrorCount);
+   Particle.variable("istune",         isTuning);
 
    // ParticleCloud: functions
-   Particle.function("setpoint",       set_Setpoint);
-   Particle.function("action",         set_Action);
-   Particle.function("tune",           set_Tunings);
-   Particle.function("win_size",       set_WindowSize);
-   Particle.function("reboot",         reBoot);
-   Particle.function("control",        setControlSensor);
+   Particle.function("Setpoint",       set_Setpoint);
+   Particle.function("Action",         set_Action);
+   Particle.function("Tune",           set_Tunings);
+   Particle.function("Output",         set_Output);
+   Particle.function("Win_Size",       set_WindowSize);
+   Particle.function("Reboot",         reBoot);
+   Particle.function("Control",        setControlSensor);
    Particle.function("AutoTune",       startAT);
-
+   Particle.function("Mode",           set_Mode);
 
    ThingSpeak.begin(client);
 
@@ -388,7 +435,7 @@ void setup() {
    myPID.SetTunings(Kp,Ki,Kd);
    //tell the PID to range between 0 and the full window size
    myPID.SetOutputLimits(0, windowSize);
-   myPID.SetMode(PID::AUTOMATIC);
+   myPID.SetMode(PID::MANUAL);
 
    windowStartTime = millis();;
 
@@ -445,42 +492,43 @@ void loop() {
    }
 
    if (crcErrorCount >= MAX_READERROR){
-       eStop = 1;
-       Input = 999;
-       Output = 0;
-       digitalWrite(RELAYPIN,LOW);
-       digitalWrite(LEDPIN,LOW);
+     eStop = 1;
+     Input = 999;
+     Output = 0;
+     digitalWrite(RELAYPIN,LOW);
+     digitalWrite(LEDPIN,LOW);
    }
-   else{
-     if (tuning){ // run the auto-tuner
-       if (aTune.Runtime()) // returns 'true' when done
-       {
-         FinishAutoTune();
-       }
-     }
-     else{ // Execute control algorithm
+   if (tuning){ // run the auto-tuner
 
-       myPID.Compute();
+     if (aTune.Runtime()) // returns 'true' when done
+     {
+       FinishAutoTune();
      }
+  }
+  else { // Execute control algorithm
+
+  myPID.Compute();
+  }
 
        /************************************************
        * turn the output pin on/off based on pid output
        ************************************************/
-       if (now - windowStartTime > windowSize) {
-           windowStartTime += windowSize;
-       }
+  if (now - windowStartTime > windowSize) {
+    windowStartTime += windowSize;
 
-       if (Output > (now - windowStartTime)) {
-           digitalWrite(RELAYPIN,HIGH);
-           digitalWrite(LEDPIN,HIGH);
-       }
-       else{
-           digitalWrite(RELAYPIN,LOW);
-           digitalWrite(LEDPIN,LOW);
-       }
+    if (Output > (now - windowStartTime)) {
+      digitalWrite(RELAYPIN,HIGH);
+      digitalWrite(LEDPIN,HIGH);
+    }
+    else{
+      digitalWrite(RELAYPIN,LOW);
+      digitalWrite(LEDPIN,LOW);
+    }
 
-       publishThingspeak(Input, Input2, now);
+      publishThingspeak(Input, Input2, now);
 
    }
+
+
 
 }
