@@ -17,7 +17,7 @@
 #define PUBLISH_INTERVAL 30000
 
 
-unsigned long myChannelNumber   = xxxxxxx;
+unsigned long myChannelNumber = 0;  // placeholder: set your ThingSpeak channel number locally, don't commit it
 const char * myWriteAPIKey      = "xxxxxxxxxxx";
 
 typedef uint8_t DeviceAddress[8];
